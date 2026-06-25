@@ -1,5 +1,6 @@
 package com.leehe.scpandroid.utils
 
+import android.util.Log
 import com.android.apksig.ApkSigner
 import java.io.File
 import java.security.KeyStore
@@ -7,35 +8,40 @@ import java.security.PrivateKey
 import java.security.cert.X509Certificate
 
 object ApkSignerUtils {
+    private const val TAG = "ApkSignerUtils"
 
     /**
-     * 使用内置测试密钥签名 APK (V2)
+     * 使用 Android 调试密钥签名 APK
+     * 如果调试密钥不可用，会直接返回 false
      */
-    fun signApk(inputApk: File, outputApk: File): Boolean {
+    fun signWithDebugKey(inputApk: File, outputApk: File): Boolean {
         return try {
-            // 这里通常需要一个 jks 密钥库，演示使用动态生成的或内置的
-            // 为了简化，假设你有一个名为 test.jks 的资源或文件
-            // 这里提供核心调用流程
-            
-            val signerConfigs = mutableListOf<ApkSigner.SignerConfig>()
-            
-            // 示例：如果你有证书和私钥
-            // val privateKey: PrivateKey = ...
-            // val certs: List<X509Certificate> = ...
-            // val config = ApkSigner.SignerConfig.Builder("cert", privateKey, certs).build()
-            // signerConfigs.add(config)
+            val debugKeystore = KeyStore.getInstance("AndroidDebugKey")
+            debugKeystore.load(null, null)
+            val alias = "androiddebugkey"
+            val password = "android".toCharArray()
 
-            val builder = ApkSigner.Builder(signerConfigs)
+            if (!debugKeystore.containsAlias(alias)) {
+                Log.e(TAG, "Debug keystore does not contain alias: $alias")
+                return false
+            }
+
+            val privateKey = debugKeystore.getKey(alias, password) as? PrivateKey
+                ?: return false
+            val cert = debugKeystore.getCertificate(alias) as? X509Certificate
+                ?: return false
+
+            val signerConfig = ApkSigner.SignerConfig.Builder("debug", privateKey, listOf(cert)).build()
+            val builder = ApkSigner.Builder(listOf(signerConfig))
                 .setInputApk(inputApk)
                 .setOutputApk(outputApk)
                 .setV1SigningEnabled(true)
                 .setV2SigningEnabled(true)
-            
-            val signer = builder.build()
-            signer.sign()
+
+            builder.build().sign()
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "APK signing failed", e)
             false
         }
     }

@@ -29,9 +29,10 @@ object ArchiveUtils {
      */
     fun extractAll(archiveFile: File, destDir: File, password: String? = null): Boolean {
         return try {
+            destDir.mkdirs()
             val zipFile = ZipFile(archiveFile)
-            if (zipFile.isEncrypted && password != null) {
-                zipFile.setPassword(password.toCharArray())
+            if (zipFile.isEncrypted) {
+                zipFile.setPassword((password ?: "").toCharArray())
             }
             zipFile.extractAll(destDir.absolutePath)
             true
@@ -46,10 +47,6 @@ object ArchiveUtils {
     fun compress(sourceFiles: List<File>, destZipFile: File, password: String? = null): Boolean {
         return try {
             val zipFile = ZipFile(destZipFile)
-            if (password != null) {
-                // 这里可以配置加密参数，暂简化实现
-                zipFile.setPassword(password.toCharArray())
-            }
             sourceFiles.forEach { file ->
                 if (file.isDirectory) {
                     zipFile.addFolder(file)

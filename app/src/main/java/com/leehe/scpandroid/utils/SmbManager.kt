@@ -52,10 +52,7 @@ object SmbManager {
      * 我们参考 SambaLite 的实现，尝试连接一些常见的共享名。
      */
     private fun tryListShares(session: Session): List<String> {
-        val commonShares = listOf(
-            "Shared", "Public", "Downloads", "Movies", "Music", "Pictures", "Data", "Home", "Users",
-            "share", "public", "downloads", "data", "external", "sda1", "sdb1", "storage", "nas"
-        )
+        val commonShares = listOf("Shared", "Public", "share", "public", "data", "external", "storage", "nas")
         val foundShares = mutableListOf<String>()
         for (name in commonShares) {
             try {
@@ -63,7 +60,7 @@ object SmbManager {
                     if (share.isConnected) foundShares.add(name)
                 }
             } catch (e: Exception) {
-                // 忽略连接失败的尝试
+                // 忽略连接失败的尝试（大部分 share 不存在是正常情况）
             }
         }
         return foundShares
@@ -109,7 +106,7 @@ object SmbManager {
             }
         } catch (e: Exception) {
             Log.e(TAG, "SMBJ operation failed: ${e.message}")
-            throw e
+            emptyList()
         }
     }
 
@@ -144,7 +141,8 @@ object SmbManager {
                                     while (bytes >= 0) {
                                         output.write(buffer, 0, bytes)
                                         transferred += bytes
-                                        if (total > 0) onProgress(transferred.toFloat() / total)
+                                        val totalSize = remoteFile.size.coerceAtLeast(1)
+                                        onProgress(transferred.toFloat() / totalSize)
                                         bytes = input.read(buffer)
                                     }
                                 }
@@ -153,6 +151,7 @@ object SmbManager {
                     }
                 }
             }
+            onProgress(1.0f)
             true
         } catch (e: Exception) {
             Log.e(TAG, "SMBJ download failed", e)
@@ -168,7 +167,7 @@ object SmbManager {
     ): Boolean = withContext(Dispatchers.IO) {
         val destRemotePath = if (remotePath.endsWith("/")) "$remotePath${localFile.name}" else "$remotePath/${localFile.name}"
         val (shareName, subPath) = parsePath(destRemotePath)
-        
+
         try {
             client.connect(storage.host, storage.port).use { connection ->
                 val session = connection.authenticate(getAuthContext(storage))
@@ -187,13 +186,13 @@ object SmbManager {
                             localFile.inputStream().use { input ->
                                 sf.outputStream.use { output ->
                                     val buffer = ByteArray(64 * 1024)
-                                    val total = localFile.length()
+                                    val total = localFile.length().coerceAtLeast(1)
                                     var transferred = 0L
                                     var bytes = input.read(buffer)
                                     while (bytes >= 0) {
                                         output.write(buffer, 0, bytes)
                                         transferred += bytes
-                                        if (total > 0) onProgress(transferred.toFloat() / total)
+                                        onProgress(transferred.toFloat() / total)
                                         bytes = input.read(buffer)
                                     }
                                 }
@@ -202,6 +201,7 @@ object SmbManager {
                     }
                 }
             }
+            onProgress(1.0f)
             true
         } catch (e: Exception) {
             Log.e(TAG, "SMBJ upload failed", e)
