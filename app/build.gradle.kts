@@ -83,6 +83,12 @@ dependencies {
     // APK Signer
     implementation(libs.apksig)
 
+    // Markdown Renderer (flexmark)
+    implementation(libs.flexmark)
+    implementation(libs.flexmark.ext.tables)
+    implementation(libs.flexmark.ext.tasklist)
+    implementation(libs.flexmark.ext.strikethrough)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

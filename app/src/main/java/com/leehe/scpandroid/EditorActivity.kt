@@ -2,6 +2,9 @@ package com.leehe.scpandroid
 
 import android.os.Bundle
 import android.util.Log
+import android.view.ViewGroup
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,16 +21,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.*
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.leehe.scpandroid.utils.CodeHighlighter
 import com.leehe.scpandroid.utils.HexUtils
+import com.leehe.scpandroid.utils.MarkdownRenderer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -52,6 +54,7 @@ class EditorActivity : ComponentActivity() {
             var isLoading by remember { mutableStateOf(true) }
             var isPreviewMode by remember { mutableStateOf(false) }
             var isTruncated by remember { mutableStateOf(false) }
+            var mdHtml by remember { mutableStateOf("") }
             val scope = rememberCoroutineScope()
 
             LaunchedEffect(file) {
@@ -66,7 +69,7 @@ class EditorActivity : ComponentActivity() {
                                 } else file.readBytes()
                                 buildString {
                                     appendLine(HexUtils.formatHexView(bytes))
-                                    if (isTruncated) appendLine("\n⚠ 文件过大，仅显示前 512KB 的内容")
+                                    if (isTruncated) appendLine("\n\u26a0 文件过大，仅显示前 512KB")
                                 }
                             }
                             file.length() > 2 * 1024 * 1024 -> {
@@ -79,7 +82,7 @@ class EditorActivity : ComponentActivity() {
                                         sb.appendLine(line)
                                         lines++
                                     }
-                                    sb.append("\n⚠ 文件过大，仅显示前 10,000 行的内容")
+                                    sb.append("\n\u26a0 文件过大，仅显示前 10,000 行")
                                     sb.toString()
                                 }
                             }
@@ -94,6 +97,15 @@ class EditorActivity : ComponentActivity() {
 
                     textValue = TextFieldValue(annotated)
                     isLoading = false
+                }
+            }
+
+            // 预览模式下预渲染 Markdown HTML
+            LaunchedEffect(isPreviewMode, textValue.text) {
+                if (isPreviewMode && extension == "md") {
+                    mdHtml = withContext(Dispatchers.IO) {
+                        MarkdownRenderer.toHtml(textValue.text, isDark)
+                    }
                 }
             }
 
@@ -147,27 +159,27 @@ class EditorActivity : ComponentActivity() {
                     Box(modifier = Modifier.padding(padding).fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
                         if (isLoading) {
                             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                        } else if (isPreviewMode && extension == "md") {
+                            // WebView Markdown 预览
+                            MarkdownWebView(
+                                html = mdHtml,
+                                isDark = isDark,
+                                modifier = Modifier.fillMaxSize()
+                            )
                         } else {
-                            if (isPreviewMode && extension == "md") {
-                                Box(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-                                    MarkdownPreview(content = textValue.text)
+                            var lastHighlightedText by remember { mutableStateOf("") }
+                            CodeEditorWithLineNumbers(
+                                value = textValue,
+                                onValueChange = { newValue ->
+                                    val text = newValue.text
+                                    if (text != lastHighlightedText) {
+                                        lastHighlightedText = text
+                                        textValue = newValue.copy(annotatedString = CodeHighlighter.highlight(text, extension))
+                                    } else {
+                                        textValue = newValue
+                                    }
                                 }
-                            } else {
-                                var lastHighlightedText by remember { mutableStateOf("") }
-                                CodeEditorWithLineNumbers(
-                                    value = textValue,
-                                    onValueChange = { newValue ->
-                                        val text = newValue.text
-                                        if (text != lastHighlightedText) {
-                                            lastHighlightedText = text
-                                            textValue = newValue.copy(annotatedString = CodeHighlighter.highlight(text, extension))
-                                        } else {
-                                            textValue = newValue
-                                        }
-                                    },
-                                    isDark = isDark
-                                )
-                            }
+                            )
                         }
                     }
                 }
@@ -177,15 +189,47 @@ class EditorActivity : ComponentActivity() {
 }
 
 @Composable
+fun MarkdownWebView(html: String, isDark: Boolean, modifier: Modifier = Modifier) {
+    var webView by remember { mutableStateOf<WebView?>(null) }
+
+    AndroidView(
+        factory = { ctx ->
+            WebView(ctx).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                settings.apply {
+                    javaScriptEnabled = false
+                    builtInZoomControls = true
+                    displayZoomControls = false
+                    loadWithOverviewMode = true
+                    useWideViewPort = true
+                }
+                webViewClient = WebViewClient()
+                setBackgroundColor(if (isDark) 0xFF0D1117.toInt() else 0xFFFFFFFF.toInt())
+                webView = this
+                loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        },
+        update = { wv ->
+            val current = wv.url
+            if (current == null || current == "about:blank") {
+                wv.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        },
+        modifier = modifier
+    )
+}
+
+@Composable
 fun CodeEditorWithLineNumbers(
     value: TextFieldValue,
-    onValueChange: (TextFieldValue) -> Unit,
-    isDark: Boolean
+    onValueChange: (TextFieldValue) -> Unit
 ) {
     val lineCount = value.text.lines().size.coerceAtLeast(1)
 
     Row(modifier = Modifier.fillMaxSize()) {
-        // 行号列
         Column(
             modifier = Modifier
                 .widthIn(min = 32.dp)
@@ -222,110 +266,8 @@ fun CodeEditorWithLineNumbers(
             ),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
             decorationBox = { innerTextField ->
-                Box {
-                    innerTextField()
-                }
+                Box { innerTextField() }
             }
         )
-    }
-}
-
-@Composable
-fun MarkdownPreview(content: String) {
-    val annotated = buildAnnotatedString {
-        val lines = content.split("\n")
-        var inCodeBlock = false
-        lines.forEach { line ->
-            when {
-                line.startsWith("```") -> {
-                    inCodeBlock = !inCodeBlock
-                    if (!inCodeBlock) append("\n")
-                }
-                inCodeBlock -> {
-                    withStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, background = androidx.compose.ui.graphics.Color(0x22000000))) {
-                        append(line)
-                    }
-                    append("\n")
-                }
-                line.startsWith("# ") -> {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = 22.sp)) { append(line.removePrefix("# ")) }
-                    append("\n")
-                }
-                line.startsWith("## ") -> {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = 18.sp)) { append(line.removePrefix("## ")) }
-                    append("\n")
-                }
-                line.startsWith("### ") -> {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontSize = 16.sp)) { append(line.removePrefix("### ")) }
-                    append("\n")
-                }
-                line.startsWith("- ") || line.startsWith("* ") -> {
-                    withStyle(SpanStyle()) { append("  •  ${line.removePrefix("- ").removePrefix("* ")}") }
-                    append("\n")
-                }
-                line.startsWith("> ") -> {
-                    withStyle(SpanStyle(color = androidx.compose.ui.graphics.Color.Gray, fontStyle = FontStyle.Italic)) { append(line) }
-                    append("\n")
-                }
-                else -> {
-                    append(renderInlineMarkdown(line))
-                    append("\n")
-                }
-            }
-        }
-    }
-
-    Box(modifier = Modifier.fillMaxWidth()) {
-        Text(text = annotated, style = MaterialTheme.typography.bodyMedium)
-    }
-}
-
-private fun renderInlineMarkdown(text: String): AnnotatedString {
-    return buildAnnotatedString {
-        var i = 0
-        while (i < text.length) {
-            when {
-                text.startsWith("**", i) -> {
-                    val end = text.indexOf("**", i + 2)
-                    if (end > 0) {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(text.substring(i + 2, end)) }
-                        i = end + 2
-                    } else { append(text[i]); i++ }
-                }
-                text.startsWith("*", i) && i + 1 < text.length && text[i + 1] != ' ' -> {
-                    val end = text.indexOf("*", i + 1)
-                    if (end > 0) {
-                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(text.substring(i + 1, end)) }
-                        i = end + 1
-                    } else { append(text[i]); i++ }
-                }
-                text.startsWith("`", i) -> {
-                    val end = text.indexOf("`", i + 1)
-                    if (end > 0) {
-                        withStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, background = androidx.compose.ui.graphics.Color(0x22000000))) { append(text.substring(i + 1, end)) }
-                        i = end + 1
-                    } else { append(text[i]); i++ }
-                }
-                text.startsWith("~~", i) -> {
-                    val end = text.indexOf("~~", i + 2)
-                    if (end > 0) {
-                        withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { append(text.substring(i + 2, end)) }
-                        i = end + 2
-                    } else { append(text[i]); i++ }
-                }
-                text.startsWith("[", i) -> {
-                    val closeBracket = text.indexOf("](", i)
-                    val closeParen = if (closeBracket > 0) text.indexOf(")", closeBracket) else -1
-                    if (closeParen > 0) {
-                        val linkText = text.substring(i + 1, closeBracket)
-                        withStyle(SpanStyle(color = androidx.compose.ui.graphics.Color(0xFF0969DA), textDecoration = TextDecoration.Underline)) {
-                            append(linkText)
-                        }
-                        i = closeParen + 1
-                    } else { append(text[i]); i++ }
-                }
-                else -> { append(text[i]); i++ }
-            }
-        }
     }
 }

@@ -19,6 +19,7 @@ shizuku = "13.1.5"
 apksig = "8.2.0"
 adblib = "1.5"
 smbj = "0.13.0"
+flexmark = "0.64.8"
 documentfile = "1.0.1"
 
 [libraries]
@@ -57,6 +58,12 @@ apksig = { group = "com.android.tools.build", name = "apksig", version.ref = "ap
 
 # ADB Lib
 adblib = { group = "com.cgutman", name = "adblib", version.ref = "adblib" }
+
+# Markdown (flexmark)
+flexmark = { group = "com.vladsch.flexmark", name = "flexmark", version.ref = "flexmark" }
+flexmark-ext-tables = { group = "com.vladsch.flexmark", name = "flexmark-ext-tables", version.ref = "flexmark" }
+flexmark-ext-tasklist = { group = "com.vladsch.flexmark", name = "flexmark-ext-gfm-tasklist", version.ref = "flexmark" }
+flexmark-ext-strikethrough = { group = "com.vladsch.flexmark", name = "flexmark-ext-gfm-strikethrough", version.ref = "flexmark" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
