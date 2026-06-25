@@ -16,21 +16,22 @@ object FileUtils {
      * 通过读取文件头部字节判断是否为文本文件 (类似 file 命令原理)
      */
     fun isTextFile(file: File): Boolean {
-        if (file.isDirectory) return false
-        if (file.length() == 0L) return true
-        
+        if (file.isDirectory || file.length() == 0L) return file.length() == 0L
+
         return try {
             FileInputStream(file).use { input ->
-                val buffer = ByteArray(1024)
+                val buffer = ByteArray(4096)
                 val read = input.read(buffer)
                 if (read <= 0) return true
-                
+
                 var nullCount = 0
                 for (i in 0 until read) {
-                    val b = buffer[i].toInt()
-                    // 检查是否存在空字符或大量非法控制字符 (二进制特征)
+                    val b = buffer[i].toInt() and 0xFF
                     if (b == 0) nullCount++
-                    if (nullCount > 2) return false
+                    // 超过 3 个空字节很可能就是二进制
+                    if (nullCount > 3) return false
+                    // 包含非 ASCII 的控制字符（除常用外）判为二进制
+                    if (b < 0x09 || (b in 0x0E..0x1F) || b == 0x7F) return false
                 }
                 true
             }
@@ -61,7 +62,9 @@ object FileUtils {
             }
             context.startActivity(intent)
         } catch (e: Exception) {
-            android.widget.Toast.makeText(context, "找不到支持此格式的应用", android.widget.Toast.LENGTH_SHORT).show()
+            val msg = if (e is IllegalArgumentException && e.message?.contains("provider") == true)
+                "FileProvider 配置错误" else "找不到支持此格式的应用"
+            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -69,6 +72,7 @@ object FileUtils {
 
     fun copyFile(source: File, destDir: File): Boolean {
         return try {
+            destDir.mkdirs()
             val destFile = File(destDir, source.name)
             if (source.isDirectory) source.copyRecursively(destFile, overwrite = true)
             else source.copyTo(destFile, overwrite = true)

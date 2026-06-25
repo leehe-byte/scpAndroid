@@ -16,8 +16,7 @@ import com.github.sardine.SardineFactory
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStream
-import java.io.OutputStream
+import java.util.concurrent.TimeUnit
 
 object NetworkManager {
     private const val TAG = "NetworkManager"
@@ -25,7 +24,7 @@ object NetworkManager {
     suspend fun listFiles(storage: NetworkStorage, path: String, context: Context? = null): List<RemoteFile> = withContext(Dispatchers.IO) {
         try {
             when (storage.type) {
-                StorageType.SFTP -> listSFTP(storage, path)
+                StorageType.SFTP, StorageType.SCP -> listSFTP(storage, path)
                 StorageType.FTP -> listFTP(storage, path)
                 StorageType.SMB -> SmbManager.listFiles(storage, path)
                 StorageType.WEBDAV -> listWebDAV(storage, path)
@@ -46,8 +45,9 @@ object NetworkManager {
         onProgress: (Float) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            localDest.parentFile?.mkdirs()
             when (storage.type) {
-                StorageType.SFTP -> downloadSFTP(storage, remoteFile, localDest, onProgress)
+                StorageType.SFTP, StorageType.SCP -> downloadSFTP(storage, remoteFile, localDest, onProgress)
                 StorageType.FTP -> downloadFTP(storage, remoteFile, localDest, onProgress)
                 StorageType.SMB -> SmbManager.downloadFile(storage, remoteFile, localDest, onProgress)
                 StorageType.ADB -> if (context != null) downloadRemoteADB(context, storage, remoteFile, localDest, onProgress) else false
@@ -68,7 +68,7 @@ object NetworkManager {
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             when (storage.type) {
-                StorageType.SFTP -> uploadSFTP(storage, localFile, remotePath, onProgress)
+                StorageType.SFTP, StorageType.SCP -> uploadSFTP(storage, localFile, remotePath, onProgress)
                 StorageType.FTP -> uploadFTP(storage, localFile, remotePath, onProgress)
                 StorageType.SMB -> SmbManager.uploadFile(storage, localFile, remotePath, onProgress)
                 StorageType.ADB -> if (context != null) uploadRemoteADB(context, storage, localFile, remotePath, onProgress) else false
@@ -80,11 +80,16 @@ object NetworkManager {
         }
     }
 
-    // --- SFTP, FTP, WebDAV implementations (Remained unchanged but optimized) ---
-
-    private fun listSFTP(storage: NetworkStorage, path: String): List<RemoteFile> {
+    private fun newSSHClient(): SSHClient {
         val ssh = SSHClient()
         ssh.addHostKeyVerifier(PromiscuousVerifier())
+        ssh.connectTimeout = 10000
+        ssh.timeout = 30000
+        return ssh
+    }
+
+    private fun listSFTP(storage: NetworkStorage, path: String): List<RemoteFile> {
+        val ssh = newSSHClient()
         return try {
             ssh.connect(storage.host, storage.port)
             ssh.authPassword(storage.username, storage.password)
@@ -98,8 +103,7 @@ object NetworkManager {
     }
 
     private fun downloadSFTP(storage: NetworkStorage, remoteFile: RemoteFile, localDest: File, onProgress: (Float) -> Unit): Boolean {
-        val ssh = SSHClient()
-        ssh.addHostKeyVerifier(PromiscuousVerifier())
+        val ssh = newSSHClient()
         return try {
             ssh.connect(storage.host, storage.port)
             ssh.authPassword(storage.username, storage.password)
@@ -120,8 +124,7 @@ object NetworkManager {
     }
 
     private fun uploadSFTP(storage: NetworkStorage, localFile: File, remotePath: String, onProgress: (Float) -> Unit): Boolean {
-        val ssh = SSHClient()
-        ssh.addHostKeyVerifier(PromiscuousVerifier())
+        val ssh = newSSHClient()
         return try {
             ssh.connect(storage.host, storage.port)
             ssh.authPassword(storage.username, storage.password)
@@ -135,7 +138,8 @@ object NetworkManager {
                     }
                 }
             })
-            sftp.put(localFile.absolutePath, remotePath)
+            val destPath = if (remotePath.endsWith("/")) "$remotePath${localFile.name}" else "$remotePath/${localFile.name}"
+            sftp.put(localFile.absolutePath, destPath)
             true
         } finally {
             ssh.disconnect()
@@ -144,52 +148,61 @@ object NetworkManager {
 
     private fun listFTP(storage: NetworkStorage, path: String): List<RemoteFile> {
         val ftp = FTPClient()
+        ftp.defaultTimeout = 10000
+        ftp.connectTimeout = 10000
         return try {
             ftp.connect(storage.host, storage.port)
-            if (storage.username.isEmpty()) ftp.login("anonymous", "") else ftp.login(storage.username, storage.password)
+            val loginOk = if (storage.username.isEmpty()) ftp.login("anonymous", "anonymous@") else ftp.login(storage.username, storage.password)
+            if (!loginOk) throw Exception("FTP 登录失败: 用户名或密码错误")
             ftp.enterLocalPassiveMode()
             ftp.listFiles(path).map {
                 RemoteFile(it.name, if (path.endsWith("/")) "$path${it.name}" else "$path/${it.name}", it.isDirectory, it.size, it.timestamp.timeInMillis)
             }
         } finally {
+            try { ftp.logout() } catch (_: Exception) {}
             ftp.disconnect()
         }
     }
 
     private fun downloadFTP(storage: NetworkStorage, remoteFile: RemoteFile, localDest: File, onProgress: (Float) -> Unit): Boolean {
         val ftp = FTPClient()
+        ftp.defaultTimeout = 10000
+        ftp.connectTimeout = 10000
         return try {
             ftp.connect(storage.host, storage.port)
-            ftp.login(storage.username, storage.password)
+            val loginOk = ftp.login(storage.username, storage.password)
+            if (!loginOk) return false
             ftp.enterLocalPassiveMode()
             ftp.setFileType(org.apache.commons.net.ftp.FTP.BINARY_FILE_TYPE)
-            val out = object : FileOutputStream(localDest) {
+            localDest.outputStream().use { out ->
+                val buf = ByteArray(8192)
                 var transferred = 0L
-                override fun write(b: Int) { super.write(b); transferred++; onProgress(transferred.toFloat() / remoteFile.size.coerceAtLeast(1)) }
-                override fun write(b: ByteArray, off: Int, len: Int) { super.write(b, off, len); transferred += len; onProgress(transferred.toFloat() / remoteFile.size.coerceAtLeast(1)) }
+                ftp.retrieveFile(remoteFile.path, out)
+                onProgress(1.0f)
             }
-            out.use { ftp.retrieveFile(remoteFile.path, it) }
+            true
         } finally {
+            try { ftp.logout() } catch (_: Exception) {}
             ftp.disconnect()
         }
     }
 
     private fun uploadFTP(storage: NetworkStorage, localFile: File, remotePath: String, onProgress: (Float) -> Unit): Boolean {
         val ftp = FTPClient()
+        ftp.defaultTimeout = 10000
+        ftp.connectTimeout = 10000
         return try {
             ftp.connect(storage.host, storage.port)
-            ftp.login(storage.username, storage.password)
+            val loginOk = ftp.login(storage.username, storage.password)
+            if (!loginOk) return false
             ftp.enterLocalPassiveMode()
             ftp.setFileType(org.apache.commons.net.ftp.FTP.BINARY_FILE_TYPE)
-            val fileSize = localFile.length()
-            val inp = object : FileInputStream(localFile) {
-                var transferred = 0L
-                override fun read(): Int { val r = super.read(); if (r != -1) { transferred++; onProgress(transferred.toFloat() / fileSize.coerceAtLeast(1)) }; return r }
-                override fun read(b: ByteArray, off: Int, len: Int): Int { val r = super.read(b, off, len); if (r != -1) { transferred += r; onProgress(transferred.toFloat() / fileSize.coerceAtLeast(1)) }; return r }
-            }
             val remoteFilePath = if (remotePath.endsWith("/")) "$remotePath${localFile.name}" else "$remotePath/${localFile.name}"
-            inp.use { ftp.storeFile(remoteFilePath, it) }
+            localFile.inputStream().use { inp -> ftp.storeFile(remoteFilePath, inp) }
+            onProgress(1.0f)
+            true
         } finally {
+            try { ftp.logout() } catch (_: Exception) {}
             ftp.disconnect()
         }
     }
@@ -210,6 +223,7 @@ object NetworkManager {
     private fun listLocalShizuku(path: String): List<RemoteFile> {
         if (!ShizukuManager.isShizukuAvailable()) return emptyList()
         val res = ShizukuManager.runCommand("ls -alF \"$path\"")
+        if (res.startsWith("Error") || res.startsWith("Exception")) return emptyList()
         return parseAdbLs(res, path)
     }
 
@@ -219,11 +233,11 @@ object NetworkManager {
             try {
                 val parts = line.split(Regex("\\s+"))
                 if (parts.size < 8) return@mapNotNull null
-                var name = parts.last()
+                val name = parts.drop(7).joinToString(" ")
                 val isDir = line.startsWith("d") || name.endsWith("/")
-                name = name.removeSuffix("*").removeSuffix("/")
+                val cleanName = name.removeSuffix("*").removeSuffix("/")
                 val size = parts[4].toLongOrNull() ?: 0L
-                RemoteFile(name, if (path.endsWith("/")) "$path$name" else "$path/$name", isDir, size, 0)
+                RemoteFile(cleanName, if (path.endsWith("/")) "$path$cleanName" else "$path/$cleanName", isDir, size, 0)
             } catch (e: Exception) {
                 null
             }
@@ -231,6 +245,7 @@ object NetworkManager {
     }
 
     private suspend fun downloadRemoteADB(context: Context, storage: NetworkStorage, remoteFile: RemoteFile, localDest: File, onProgress: (Float) -> Unit): Boolean {
+        localDest.parentFile?.mkdirs()
         val content = AdbManager.pullFileContent(context, storage.host, storage.port, remoteFile.path)
         return if (!content.startsWith("Error")) {
             localDest.writeText(content)
@@ -241,19 +256,29 @@ object NetworkManager {
 
     private suspend fun uploadRemoteADB(context: Context, storage: NetworkStorage, localFile: File, remotePath: String, onProgress: (Float) -> Unit): Boolean {
         val destPath = if (remotePath.endsWith("/")) "$remotePath${localFile.name}" else "$remotePath/${localFile.name}"
-        val success = AdbManager.pushFileContent(context, storage.host, storage.port, localFile.readText(), destPath)
+        // 大文件保护：超过 2MB 拒绝通过 ADB shell 上传
+        if (localFile.length() > 2 * 1024 * 1024) {
+            Log.w(TAG, "File too large for ADB upload: ${localFile.length()} bytes")
+            return false
+        }
+        val content = localFile.readText(Charsets.UTF_8)
+        val success = AdbManager.pushFileContent(context, storage.host, storage.port, content, destPath)
         if (success) onProgress(1.0f)
         return success
     }
 
     private fun listWebDAV(storage: NetworkStorage, path: String): List<RemoteFile> {
         val sardine = if (storage.username.isEmpty()) SardineFactory.begin() else SardineFactory.begin(storage.username, storage.password)
-        val url = if (storage.host.startsWith("http")) "${storage.host}:${storage.port}$path" else "http://${storage.host}:${storage.port}$path"
+        val base = if (storage.host.startsWith("http")) storage.host.trimEnd('/') else "http://${storage.host}"
+        val portSuffix = if (storage.port != 80 && storage.port != 443) ":${storage.port}" else ""
+        val normalizedPath = if (path.startsWith("/")) path else "/$path"
+        val url = "$base$portSuffix$normalizedPath"
         return try {
-            sardine.list(url).filter { it.name != null }.map {
-                RemoteFile(it.name ?: "", it.path, it.isDirectory, it.contentLength ?: 0, it.modified?.time ?: 0)
+            sardine.list(url).filter { it.name != null && it.name != "" }.map {
+                RemoteFile(it.name ?: "", it.path ?: "", it.isDirectory, it.contentLength ?: 0, it.modified?.time ?: 0)
             }
         } catch (e: Exception) {
+            Log.e(TAG, "WebDAV list failed for $url", e)
             emptyList()
         }
     }

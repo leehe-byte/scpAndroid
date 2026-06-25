@@ -16,7 +16,7 @@ object AppUtils {
             val label = app.loadLabel(pm).toString()
             val packageName = app.packageName
             val icon = app.loadIcon(pm)
-            val sourceDir = app.sourceDir
+            val sourceDir = app.sourceDir ?: continue
             val file = File(sourceDir)
             val size = if (file.exists()) file.length() else 0
             val uid = app.uid
@@ -43,7 +43,7 @@ object AppUtils {
                 )
             )
         }
-        return appInfoList.sortedBy { it.appName.lowercase() }
+        return appInfoList.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.appName })
     }
 
     fun extractApk(context: Context, appInfo: AppInfo, targetDir: File): Boolean {

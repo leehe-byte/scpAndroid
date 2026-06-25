@@ -51,20 +51,27 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
 import com.leehe.scpandroid.models.*
 import com.leehe.scpandroid.utils.*
+import net.lingala.zip4j.ZipFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import kotlin.system.exitProcess
 
 @OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
+
+    // Archive browser state
+    private var showArchiveBrowser by mutableStateOf(false)
+    private var archiveEntries by mutableStateOf<List<ArchiveEntry>>(emptyList())
+    private var archiveFile by mutableStateOf<File?>(null)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         if (permissions.all { it.value }) {
             refreshAll()
+        } else {
+            Toast.makeText(this, "需要存储权限才能浏览文件", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -74,7 +81,7 @@ class MainActivity : ComponentActivity() {
     private var themeMode by mutableStateOf("system")
 
     // Panel States
-    private var leftCurrentDir by mutableStateOf(File("/sdcard"))
+    private var leftCurrentDir by mutableStateOf(Environment.getExternalStorageDirectory())
     private var rightCurrentDir by mutableStateOf(File("/"))
     private val leftFileList = mutableStateListOf<Any>()
     private val rightFileList = mutableStateListOf<Any>()
@@ -149,11 +156,12 @@ class MainActivity : ComponentActivity() {
                             
                             Text("本地存储", modifier = Modifier.padding(16.dp, 8.dp), style = MaterialTheme.typography.labelMedium)
                             NavigationDrawerItem(
-                                label = { Text("内部存储 (/sdcard)") },
+                                label = { Text("内部存储") },
                                 selected = false,
                                 onClick = {
-                                    if (isLeftActive) { isLeftRemote = false; leftCurrentDir = File("/sdcard") } 
-                                    else { isRightRemote = false; rightCurrentDir = File("/sdcard") }
+                                    val storageDir = Environment.getExternalStorageDirectory()
+                                    if (isLeftActive) { isLeftRemote = false; leftCurrentDir = storageDir }
+                                    else { isRightRemote = false; rightCurrentDir = storageDir }
                                     refreshAll(); scope.launch { drawerState.close() }
                                 },
                                 icon = { Icon(Icons.Default.Smartphone, null) }
@@ -219,7 +227,7 @@ class MainActivity : ComponentActivity() {
                             NavigationDrawerItem(
                                 label = { Text("退出") },
                                 selected = false,
-                                onClick = { exitProcess(0) },
+                                onClick = { finishAffinity() },
                                 icon = { Icon(Icons.Default.ExitToApp, null) }
                             )
                         }
@@ -280,7 +288,7 @@ class MainActivity : ComponentActivity() {
                 if (showAddStorageDialog) {
                     AddStorageDialog(
                         existingStorage = storageToEdit,
-                        onDismiss = { showAddStorageDialog = false }, 
+                        onDismiss = { showAddStorageDialog = false; storageToEdit = null },
                         onAdd = { storage ->
                             if (storageToEdit != null) {
                                 val idx = savedStorages.indexOf(storageToEdit)
@@ -289,7 +297,8 @@ class MainActivity : ComponentActivity() {
                                 savedStorages.add(storage)
                             }
                             StoragePrefs.saveStorages(this@MainActivity, savedStorages)
-                            showAddStorageDialog = false 
+                            showAddStorageDialog = false
+                            storageToEdit = null
                         }
                     )
                 }
@@ -297,11 +306,50 @@ class MainActivity : ComponentActivity() {
                 if (isTransferring) {
                     TransferProgressDialog(transferMessage, transferProgress)
                 }
+
+                if (showArchiveBrowser && archiveFile != null) {
+                    ArchiveBrowserDialog(
+                        archiveFile = archiveFile!!,
+                        entries = archiveEntries,
+                        onDismiss = { showArchiveBrowser = false; archiveFile = null },
+                        onExtract = { entry ->
+                            lifecycleScope.launch {
+                                val dest = File(archiveFile!!.parentFile!!, archiveFile!!.nameWithoutExtension)
+                                dest.mkdirs()
+                                isTransferring = true
+                                transferMessage = "正在解压: ${entry.name}"
+                                val ok = withContext(Dispatchers.IO) {
+                                    val zipFile = ZipFile(archiveFile)
+                                    try {
+                                        zipFile.extractFile(entry.name, dest.absolutePath)
+                                        true
+                                    } catch (e: Exception) { false }
+                                }
+                                isTransferring = false
+                                if (ok) refreshAll()
+                                showArchiveBrowser = false
+                                archiveFile = null
+                            }
+                        },
+                        onExtractAll = {
+                            val dest = File(archiveFile!!.parentFile!!, archiveFile!!.nameWithoutExtension)
+                            dest.mkdirs()
+                            isTransferring = true
+                            transferMessage = "正在解压全部..."
+                            lifecycleScope.launch {
+                                withContext(Dispatchers.IO) { ArchiveUtils.extractAll(archiveFile!!, dest) }
+                                isTransferring = false
+                                refreshAll()
+                                showArchiveBrowser = false
+                                archiveFile = null
+                            }
+                        }
+                    )
+                }
             }
         }
         checkPermissions()
         lifecycleScope.launch {
-            withContext(Dispatchers.IO) { Thread.sleep(500) }
             shizukuActive = ShizukuManager.isShizukuAvailable()
         }
     }
@@ -475,7 +523,7 @@ class MainActivity : ComponentActivity() {
             val storage = if(isLeft) leftStorage else rightStorage
             if (storage != null) {
                 if (storage.type == StorageType.LOCAL_SAF) {
-                    // SAF 暂时不支持直接编辑
+                    Toast.makeText(this@MainActivity, "SAF 存储暂不支持直接编辑", Toast.LENGTH_SHORT).show()
                 } else {
                     downloadRemoteFile(item, storage)
                 }
@@ -492,10 +540,9 @@ class MainActivity : ComponentActivity() {
             val fileSize = file.length()
             
             if (isText && fileSize < 5 * 1024 * 1024) {
-                // 5MB 以内的文本或代码，直接用内置编辑器打开
                 openEditor(item, false)
             } else if (ext == "zip" || ext == "apk" || ext == "rar") {
-                // 进入压缩包浏览逻辑 (后续实现)
+                openArchiveBrowser(item)
             } else {
                 // 大型文件或二进制文件，交给系统处理
                 FileUtils.openWithSystem(this@MainActivity, file)
@@ -576,6 +623,15 @@ class MainActivity : ComponentActivity() {
                 "edit" -> if(item is FileItem) openEditor(item, false)
                 "hex" -> if(item is FileItem) openEditor(item, true)
             }
+        }
+    }
+
+    private fun openArchiveBrowser(item: FileItem) {
+        lifecycleScope.launch {
+            val entries = withContext(Dispatchers.IO) { ArchiveUtils.getArchiveEntries(item.file) }
+            archiveFile = item.file
+            archiveEntries = entries
+            showArchiveBrowser = true
         }
     }
 
@@ -714,7 +770,7 @@ fun FilePanel(
     AnimatedContent(
         targetState = files,
         transitionSpec = {
-            fadeIn(animationSpec = tween(300)) + scaleIn(initialScale = 0.95f) with
+            fadeIn(animationSpec = tween(300)) + scaleIn(initialScale = 0.95f) togetherWith
             fadeOut(animationSpec = tween(200))
         },
         modifier = Modifier.fillMaxSize()
@@ -864,6 +920,54 @@ fun TransferProgressDialog(message: String, progress: Float) {
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(message)
                 LinearProgressIndicator(progress = progress, modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+fun ArchiveBrowserDialog(
+    archiveFile: File,
+    entries: List<ArchiveEntry>,
+    onDismiss: () -> Unit,
+    onExtract: (ArchiveEntry) -> Unit,
+    onExtractAll: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Card(modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.7f)) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(archiveFile.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onExtractAll) { Text("全部解压") }
+                }
+                Divider(Modifier.padding(vertical = 8.dp))
+                if (entries.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("无法读取压缩包内容", color = MaterialTheme.colorScheme.error)
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.weight(1f)) {
+                        items(entries.size) { idx ->
+                            val entry = entries[idx]
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable { onExtract(entry) }.padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    if (entry.isDirectory) Icons.Default.Folder else getFileIcon(entry.name, false),
+                                    null,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(entry.name, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                                    if (!entry.isDirectory) Text(FileUtils.formatFileSize(entry.uncompressedSize), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                            }
+                        }
+                    }
+                }
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("关闭") }
             }
         }
     }
