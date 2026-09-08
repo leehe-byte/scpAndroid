@@ -45,6 +45,7 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (hasReleaseKey) {
                 signingConfig = signingConfigs.getByName("release")
+            }  // 修复：原来是 ) 而不是 }
         }
     }
     compileOptions {
