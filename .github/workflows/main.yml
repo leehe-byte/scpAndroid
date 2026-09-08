@@ -1,0 +1,85 @@
+name: Android CI
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*' # 当推送 v 开头的 tag 时自动触发 Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整历史以读取 tag
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android Build Tools 29.0.3
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;29.0.3"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease
+        env:
+          # 通过环境变量传给 Gradle 内签名（KEYSTORE_FILE 为 base64 编码的 keystore）
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_FILE }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Prepare Artifacts
+        run: |
+          # 获取版本号，如果是 tag 触发则用 tag 名，否则用 short sha
+          VERSION=${GITHUB_REF_NAME}
+          if [[ $GITHUB_REF != refs/tags/* ]]; then
+            VERSION="nightly-$(git rev-parse --short HEAD)"
+          fi
+          
+          # 定义更正式的文件名
+          OUTPUT_NAME="ScpAndroid-${VERSION}-release.apk"
+          
+          # 移动并重命名
+          mkdir -p final_artifacts
+          cp app/build/outputs/apk/release/*.apk "final_artifacts/${OUTPUT_NAME}"
+          
+          # 导出给后续步骤使用
+          echo "FINAL_FILENAME=${OUTPUT_NAME}" >> $GITHUB_ENV
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: WebManagerLite ${{ env.VERSION }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ## 🚀 ScpAndroid ${{ env.VERSION }}
+            自动编译结果包含：
+            - `${{ env.FINAL_FILENAME }}`
+          files: final_artifacts/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Artifact (For non-tag builds)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FINAL_FILENAME }}
+          path: final_artifacts/*.apk
+          retention-days: 7
