@@ -207,6 +207,9 @@ object NetworkManager {
         }
     }
 
+    private val LS_SPLIT_RE = Regex("\\s+")
+    private val LS_MONTH = setOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+
     // --- ADB Implementation ---
 
     private suspend fun listRemoteADB(context: Context, storage: NetworkStorage, path: String): List<RemoteFile> {
@@ -228,20 +231,23 @@ object NetworkManager {
     }
 
     private fun parseAdbLs(res: String, path: String): List<RemoteFile> {
-        val lines = res.split("\n")
-        return lines.filter { it.isNotBlank() && !it.startsWith("total") && !it.contains("Permission denied") }.mapNotNull { line ->
-            try {
-                val parts = line.split(Regex("\\s+"))
-                if (parts.size < 8) return@mapNotNull null
-                val name = parts.drop(7).joinToString(" ")
-                val isDir = line.startsWith("d") || name.endsWith("/")
-                val cleanName = name.removeSuffix("*").removeSuffix("/")
-                val size = parts[4].toLongOrNull() ?: 0L
-                RemoteFile(cleanName, if (path.endsWith("/")) "$path$cleanName" else "$path/$cleanName", isDir, size, 0)
-            } catch (e: Exception) {
-                null
+        return res.split("\n")
+            .filter { it.isNotBlank() && !it.startsWith("total") && !it.contains("Permission denied") }
+            .mapNotNull { line ->
+                try {
+                    val parts = line.split(LS_SPLIT_RE)
+                    if (parts.size < 7) return@mapNotNull null
+                    val isMonth = parts[5].length == 3 && parts[5] in LS_MONTH
+                    val nameStart = if (isMonth) 8 else 7
+                    if (parts.size <= nameStart) return@mapNotNull null
+                    val name = parts.drop(nameStart).joinToString(" ")
+                    val isDir = line.startsWith("d") || name.removeSuffix("*").removeSuffix("/").removeSuffix("@").endsWith("/")
+                    val cleanName = name.removeSuffix("*").removeSuffix("/").removeSuffix("@")
+                        .let { val a = it.indexOf(" -> "); if (a > 0) it.substring(0, a) else it }
+                    val size = parts[4].toLongOrNull() ?: 0L
+                    RemoteFile(cleanName, if (path.endsWith("/")) "$path${cleanName}" else "$path/${cleanName}", isDir, size, 0)
+                } catch (e: Exception) { null }
             }
-        }
     }
 
     private suspend fun downloadRemoteADB(context: Context, storage: NetworkStorage, remoteFile: RemoteFile, localDest: File, onProgress: (Float) -> Unit): Boolean {

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item android:id="@+id/action_refresh" android:title="刷新" android:icon="@drawable/ic_refresh" app:showAsAction="always" />
+    <item android:id="@+id/action_hidden" android:title="隐藏文件" android:icon="@drawable/ic_eye_off" app:showAsAction="always" />
+    <item android:id="@+id/action_upload" android:title="上传" android:icon="@drawable/ic_upload" app:showAsAction="never" />
+    <item android:id="@+id/action_sort" android:title="排序" app:showAsAction="never" />
+    <item android:id="@+id/action_shizuku" android:title="Shizuku" app:showAsAction="never" />
+</menu>

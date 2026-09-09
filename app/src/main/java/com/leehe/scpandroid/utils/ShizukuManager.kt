@@ -13,6 +13,8 @@ object ShizukuManager {
     private const val TAG = "ShizukuManager"
     private const val REQUEST_CODE = 1001
 
+    @Volatile private var newProcessMethod: java.lang.reflect.Method? = null
+
     fun init() {
         Shizuku.addBinderReceivedListener {
             Log.d(TAG, "Binder received successfully")
@@ -87,14 +89,18 @@ object ShizukuManager {
     @Suppress("UNCHECKED_CAST", "DEPRECATION")
     fun runCommand(command: String): String {
         return try {
-            val shizukuClass = Shizuku::class.java
-            val method = shizukuClass.getDeclaredMethod(
-                "newProcess",
-                Array<String>::class.java,
-                Array<String>::class.java,
-                String::class.java
-            )
-            method.isAccessible = true
+            var method = newProcessMethod
+            if (method == null) {
+                val shizukuClass = Shizuku::class.java
+                method = shizukuClass.getDeclaredMethod(
+                    "newProcess",
+                    Array<String>::class.java,
+                    Array<String>::class.java,
+                    String::class.java
+                )
+                method.isAccessible = true
+                newProcessMethod = method
+            }
 
             val process = method.invoke(null, arrayOf("sh", "-c", command), null, null) as ShizukuRemoteProcess
 

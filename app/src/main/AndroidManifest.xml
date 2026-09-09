@@ -13,7 +13,7 @@
         android:label="@string/scpAndroid"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+        android:theme="@style/Theme.ScpAndroid">
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
@@ -22,11 +22,21 @@
             android:exported="true"
             android:multiprocess="false"
             android:permission="android.permission.INTERNET" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+            android:theme="@style/Theme.ScpAndroid">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -36,7 +46,8 @@
         <activity
             android:name=".EditorActivity"
             android:exported="false"
-            android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.ScpAndroid" />
     </application>
 
 </manifest>

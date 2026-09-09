@@ -1,3 +1,10 @@
 <resources>
     <string name="scpAndroid">scpAndroid</string>
+    <string-array name="storage_types">
+        <item>SFTP</item>
+        <item>FTP</item>
+        <item>SMB</item>
+        <item>WebDAV</item>
+        <item>ADB</item>
+    </string-array>
 </resources>
